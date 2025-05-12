@@ -7,3 +7,4 @@ int32 img_width
 int32 img_height
 int8[] mask
 float64[] point_cloud
+uint8[] clip_embedding_bytes # Bytes for compact transmission

@@ -27,12 +27,20 @@ cfg_arg = DeclareLaunchArgument(
 roman_align_node_params = {
     "robot1": robot1,
     "robot2": robot2,
+    'map_frame_id': 'world',
 }
 
 parameters = [roman_align_node_params]
 cfg_set = IfCondition(cfg)
 if cfg_set:
     parameters.append(cfg)
+
+topic_remappings = [
+    (['/', robot1, '/roman/segment_updates'], ['/roman/', robot1, '/segment_updates']),
+    (['/', robot2, '/roman/segment_updates'], ['/roman/', robot2, '/segment_updates']),
+    (['/', robot1, '/roman/frame_align/' ,robot2], ['/roman', '/frame_align/', robot1, '_', robot2]),
+    (['/', robot1, '/roman/frame_align/' ,robot2 , '/markers'], ['/roman', '/frame_align/', robot1, '_', robot2, '/markers'])
+]
 
 roman_align_node = Node(
     package='roman_ros2',
@@ -42,6 +50,7 @@ roman_align_node = Node(
     output='screen',
     emulate_tty=True,
     parameters=parameters,
+    remappings=topic_remappings
 )
 
 def generate_launch_description():

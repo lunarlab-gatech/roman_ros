@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import numpy as np
+from numpy import random
 import os
 import cv2 as cv
 import struct
@@ -15,7 +16,7 @@ import cv_bridge
 import message_filters
 import ros2_numpy as rnp
 from rcl_interfaces.msg import ParameterDescriptor
-from rclpy.qos import QoSProfile
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 import tf2_ros
 from rclpy.executors import MultiThreadedExecutor
 
@@ -24,8 +25,10 @@ import std_msgs.msg as std_msgs
 import geometry_msgs.msg as geometry_msgs
 import nav_msgs.msg as nav_msgs
 import sensor_msgs.msg as sensor_msgs
+import sensor_msgs_py.point_cloud2 as pc2
 import roman_msgs.msg as roman_msgs
 from ros_system_monitor_msgs.msg import NodeInfoMsg
+from sklearn.decomposition import PCA
 
 # robot_utils
 from robotdatapy.camera import CameraParams
@@ -63,7 +66,8 @@ class RomanMapNode(Node):
                 ("viz_pts_per_obj", 250),
                 ("viz_min_viz_dt", 2.0),
                 ("viz_rotate_img", ""),
-                ("viz_pointcloud", False)
+                ("viz_pointcloud", False),
+                ("wait_for_tf_time", 1.0)
             ]
         )
 
@@ -76,6 +80,7 @@ class RomanMapNode(Node):
         self.publish_active_segments = self.get_parameter("publish_active_segments").value
         self.nickname = self.get_parameter("nickname").value
         config_path = self.get_parameter("config_path").value
+        self.wait_for_tf_time = self.get_parameter("wait_for_tf_time").value
 
         if self.visualize:
             self.map_frame_id = self.get_parameter("map_frame_id").value
@@ -86,6 +91,16 @@ class RomanMapNode(Node):
             self.viz_pointcloud = self.get_parameter("viz_pointcloud").value
             if self.viz_rotate_img == "":
                 self.viz_rotate_img = None
+
+            self.pc_fields = [
+                sensor_msgs.PointField(name='x', offset=0, datatype=pc2.PointField.FLOAT32, count=1),
+                sensor_msgs.PointField(name='y', offset=4, datatype=pc2.PointField.FLOAT32, count=1),
+                sensor_msgs.PointField(name='z', offset=8, datatype=pc2.PointField.FLOAT32, count=1),
+                sensor_msgs.PointField(name='rgb', offset=12, datatype=pc2.PointField.FLOAT32, count=1),
+            ]
+
+            self.pca = PCA(n_components=3)
+
         if self.output_file != "":
             self.output_file = os.path.expanduser(self.output_file)
             self.pose_history = []
@@ -132,7 +147,7 @@ class RomanMapNode(Node):
             self.create_subscription(sensor_msgs.Image, "color/image_raw", self.viz_cb, 10)
             self.bridge = cv_bridge.CvBridge()
             self.annotated_img_pub = self.create_publisher(sensor_msgs.Image, "roman/annotated_img", qos_profile=10)
-            self.object_points_pub = self.create_publisher(sensor_msgs.PointCloud, "roman/object_points", qos_profile=10)
+            self.object_points_pub = self.create_publisher(sensor_msgs.PointCloud2, "roman/object_points", qos_profile=10)
 
         self.log_and_send_status("ROMAN Map Node setup complete.", status=NodeInfoMsg.STARTUP)
         self.log_and_send_status("Waiting for observation.", status=NodeInfoMsg.STARTUP)
@@ -180,6 +195,56 @@ class RomanMapNode(Node):
             self.pose_history.append(rnp.numpify(obs_array_msg.pose_flu))
             self.time_history.append(t)
 
+        # Publish Point Clouds
+        if self.visualize:
+            # Get the self.viz_num_objs most recently seen segments
+            most_recently_seen_segments = sorted(
+                self.mapper.segments + self.mapper.inactive_segments + self.mapper.segment_graveyard, 
+                key=lambda x: x.last_seen if len(x.points) > 10 else 0, reverse=True)#[:self.viz_num_objs]
+            
+            total_points = np.zeros([0, 4], dtype=np.float32)
+
+            if len(most_recently_seen_segments) >= 3:
+                # Extract semantic descriptors for each segment and fit_transform with pca
+                semantic_descriptors = np.array([segment.semantic_descriptor for segment in most_recently_seen_segments])
+                pca_array = self.pca.fit_transform(semantic_descriptors)
+                min_val = pca_array.min(axis=0)
+                max_val = pca_array.max(axis=0)
+                scaled = (pca_array - min_val) / (max_val - min_val + 1e-8)  # avoid div0
+                colors_unpacked = (scaled * 255).astype(np.uint8)
+                
+                for i, segment in enumerate(most_recently_seen_segments):
+                    color_unpacked = colors_unpacked[i]
+                    color_raw = int(color_unpacked[0]*256**2 + color_unpacked[1]*256 + color_unpacked[2])
+                    color_packed = struct.unpack('f', struct.pack('I', color_raw))[0]
+                    rgb_uint32 = struct.unpack('I', struct.pack('f', color_packed))[0]
+                    r = (rgb_uint32 >> 16) & 0xFF
+                    g = (rgb_uint32 >> 8) & 0xFF
+                    b = rgb_uint32 & 0xFF
+                    
+                    # Sample 50% points from the segment randomly
+                    points = segment.points
+                    sampled_points = np.random.choice(len(points), int(len(points) / 2), replace=False)
+                    points = [points[i] for i in sampled_points]
+                    points = np.concatenate((points, np.full((len(points), 1), color_packed)), axis=1)
+                    total_points = np.concatenate((total_points, np.array(points)), axis=0)
+
+                # If there aren't any points, return
+                if len(total_points.shape) == 1:
+                    return
+                
+                # Convert nddarray to iterable list of tuples
+                points = []
+                for row in total_points:
+                    points.append(tuple(row))
+
+                # Create a PointCloud2 message
+                header = std_msgs.Header()
+                header.stamp = obs_array_msg.header.stamp
+                header.frame_id = self.map_frame_id
+                cloud_msg = pc2.create_cloud(header, self.pc_fields, points)
+                self.object_points_pub.publish(cloud_msg)
+
     def publish_segment(self, segment: Segment):
         if self.object_ref == 'bottom_middle':
             segment.set_center_ref('bottom_middle')
@@ -192,7 +257,6 @@ class RomanMapNode(Node):
         if not self.up:
             return
 
-        # rospy.logwarn("Received messages")
         t = time_stamp_to_float(img_msg.header.stamp)
         if t - self.last_viz_t < self.min_viz_dt:
             return
@@ -200,11 +264,11 @@ class RomanMapNode(Node):
             self.last_viz_t = t
             
         cam_frame_id = img_msg.header.frame_id
-
+        
         try:
-            transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, cam_frame_id, img_msg.header.stamp, rclpy.duration.Duration(seconds=2.0))
+            transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, cam_frame_id, img_msg.header.stamp, rclpy.duration.Duration(seconds=self.wait_for_tf_time))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
-            self.get_logger().warning("tf lookup failed")
+            self.get_logger().warning("tf lookup failed; failed to publish annotated image")
             self.get_logger().warning(str(ex))
             return
 
@@ -237,35 +301,6 @@ class RomanMapNode(Node):
         status_msg.status = status
         status_msg.notes = note
         self.status_pub.publish(status_msg)
-
-        # Point cloud publishing
-        # points_msg = sensor_msgs.PointCloud()
-        # points_msg.header = img_msg.header
-        # points_msg.header.frame_id = self.map_frame_id
-        # points_msg.points = []
-        # # points_msg.channels = [sensor_msgs.ChannelFloat32(name=channel, values=[]) for channel in ['r', 'g', 'b']]
-        # points_msg.channels = [sensor_msgs.ChannelFloat32(name='rgb', values=[])]
-        
-
-        # most_recently_seen_segments = sorted(
-        #     self.mapper.segments + self.mapper.inactive_segments + self.mapper.segment_graveyard, 
-        #     key=lambda x: x.last_seen if len(x.points) > 10 else 0, reverse=True)[:self.viz_num_objs]
-
-        # for segment in most_recently_seen_segments:
-        #     # color
-        #     np.random.seed(segment.id)
-        #     color_unpacked = np.random.rand(3)*256
-        #     color_raw = int(color_unpacked[0]*256**2 + color_unpacked[1]*256 + color_unpacked[2])
-        #     color_packed = struct.unpack('f', struct.pack('i', color_raw))[0]
-            
-        #     points = segment.points
-        #     sampled_points = np.random.choice(len(points), min(len(points), 1000), replace=True)
-        #     points = [points[i] for i in sampled_points]
-        #     points_msg.points += [geometry_msgs.Point32(x=p[0], y=p[1], z=p[2]) for p in points]
-        #     points_msg.channels[0].values += [color_packed for _ in points]
-        
-        # self.object_points_pub.publish(points_msg)
-
         return
     
     def shutdown(self):
@@ -285,7 +320,7 @@ class RomanMapNode(Node):
         """
         Wait for a message on topic of type msg_type
         """
-        subscription = self.create_subscription(msg_type, topic, self._wait_for_message_cb, 1)
+        subscription = self.create_subscription(msg_type, topic, self._wait_for_message_cb, qos_profile=QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE))
         
         self._wait_for_message_msg = None
         while self._wait_for_message_msg is None:

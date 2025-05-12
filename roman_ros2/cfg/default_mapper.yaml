@@ -1,7 +1,7 @@
 # ROMAN (non-ROS) MapperParams
 min_iou: 0.25
 min_sightings: 2
-max_t_no_sightings: 0.4
+max_t_no_sightings: 3 # 0.4
 merge_objects_iou_3d: 0.25
 merge_objects_iou_2d: 0.8
 mask_downsample_factor: 8

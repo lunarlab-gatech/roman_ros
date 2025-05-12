@@ -4,3 +4,4 @@ int32 segment_id
 geometry_msgs/Point position  # Position in odom frame
 float64 volume
 float64[4] shape_attributes # volume, linearity, planarity, scattering
+uint8[] semantic_descriptor_bytes # Bytes for compact transmission

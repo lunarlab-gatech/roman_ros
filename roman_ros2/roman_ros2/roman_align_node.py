@@ -12,6 +12,7 @@ import ros2_numpy as rnp
 import roman_msgs.msg as roman_msgs
 import geometry_msgs.msg as geometry_msgs
 import visualization_msgs.msg as visualization_msgs
+import std_msgs.msg as std_msgs
 
 # Custom modules
 from robotdatapy.transform import transform_to_xyzrpy
@@ -64,8 +65,10 @@ class ROMANAlignNode(Node):
         # required ros parameters
         self.declare_parameter("robot1", rclpy.parameter.Parameter.Type.STRING)
         self.declare_parameter("robot2", rclpy.parameter.Parameter.Type.STRING)
+        self.declare_parameter("map_frame_id", rclpy.parameter.Parameter.Type.STRING)
         self.robot1 = self.get_parameter("robot1").value
         self.robot2 = self.get_parameter("robot2").value
+        self.map_frame_id = self.get_parameter("map_frame_id").value
         assert self.robot1 is not None and self.robot2 is not None, \
             "robot1 and robot2 params must be set."
 
@@ -197,11 +200,11 @@ class ROMANAlignNode(Node):
         markers = []
         for i, obj in enumerate(map1):
             color = association_color if i in associations[:,0] else ego_color
-            markers.append(default_marker(obj.center, color, id=obj.id))
+            markers.append(default_marker(obj.center, color, self.map_frame_id, id=obj.id))
 
         for i, obj in enumerate(map2):
             color = association_color if i in associations[:,1] else other_color
-            markers.append(default_marker(obj.center, color, id=int(obj.id + 1e6)))
+            markers.append(default_marker(obj.center, color, self.map_frame_id, id=int(obj.id + 1e6)))
 
         self.map_association_pub.publish(visualization_msgs.MarkerArray(markers=markers))
         

@@ -57,6 +57,7 @@ def observation_from_msg(observation_msg: roman_msgs.Observation):
         ) if observation_msg.mask else None,
         point_cloud=(np.array(observation_msg.point_cloud).reshape((-1, 3)) 
                      if observation_msg.point_cloud else None),
+        clip_embedding=np.frombuffer(observation_msg.clip_embedding_bytes, dtype=np.float16)
     )
     return observation
 
@@ -82,6 +83,7 @@ def observation_to_msg(observation: Observation):
         mask=observation.mask_downsampled.flatten().astype(np.int8).tolist() if observation.mask is not None else None,
         point_cloud=(observation.point_cloud.flatten().tolist() 
                      if observation.point_cloud is not None else None),
+        clip_embedding_bytes=list(observation.clip_embedding.tobytes())
     )
     return observation_msg
 
@@ -113,7 +115,8 @@ def segment_to_msg(robot_id: int, segment: Segment):
         position=rnp.msgify(geometry_msgs.Point, centroid_from_segment(segment)),
         # volume=estimate_volume(segment.points) if segment.points is not None else 0.0,
         volume=segment.volume,
-        shape_attributes=[segment.volume, segment.linearity(e), segment.planarity(e), segment.scattering(e)]
+        shape_attributes=[segment.volume, segment.linearity(e), segment.planarity(e), segment.scattering(e)],
+        semantic_descriptor_bytes=list(segment.semantic_descriptor.tobytes())
     )
     return segment_msg
 
@@ -134,7 +137,7 @@ def msg_to_segment(segment_msg: roman_msgs.Segment) -> SegmentMinimalData:
         linearity=segment_msg.shape_attributes[1],
         planarity=segment_msg.shape_attributes[2],
         scattering=segment_msg.shape_attributes[3],
-        semantic_descriptor=None,
+        semantic_descriptor=np.frombuffer(segment_msg.semantic_descriptor_bytes, dtype=np.float16),
         extent=None,
         first_seen=None,
         last_seen=time_stamp_to_float(segment_msg.header.stamp),
@@ -177,7 +180,7 @@ def estimate_volume(points, axis_discretization=10):
                     volume += x_seg_size * y_seg_size * z_seg_size
     return volume
 
-def default_marker(position: Tuple[float, float, float], color: Tuple[float, float, float], id=0) -> visualization_msgs.Marker:
+def default_marker(position: Tuple[float, float, float], color: Tuple[float, float, float], frame :str, id=0) -> visualization_msgs.Marker:
     """
     Create a default marker for visualization
 
@@ -188,7 +191,7 @@ def default_marker(position: Tuple[float, float, float], color: Tuple[float, flo
         visualization_msgs.Marker: marker message
     """
     marker = visualization_msgs.Marker()
-    marker.header.frame_id = "map" # TODO: not sure what frame we want to do this visualization
+    marker.header.frame_id = frame
     marker.header.stamp = rclpy.time.Time().to_msg()
     marker.ns = "default"
     marker.id = id
@@ -196,9 +199,9 @@ def default_marker(position: Tuple[float, float, float], color: Tuple[float, flo
     marker.action = visualization_msgs.Marker.ADD
     marker.pose.position = rnp.msgify(geometry_msgs.Point, np.array(position).reshape(-1))
     marker.pose.orientation = rnp.msgify(geometry_msgs.Quaternion, Rot.from_euler('xyz', [0, 0, 0]).as_quat())
-    marker.scale.x = 0.25
-    marker.scale.y = 0.25
-    marker.scale.z = 0.25
+    marker.scale.x = 1
+    marker.scale.y = 1
+    marker.scale.z = 1
     marker.color.a = 1.0
     marker.color.r = color[0]
     marker.color.g = color[1]

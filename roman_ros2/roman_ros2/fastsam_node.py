@@ -12,7 +12,8 @@ import cv_bridge
 import message_filters
 import ros2_numpy as rnp
 from rcl_interfaces.msg import ParameterDescriptor
-from rclpy.qos import QoSProfile
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from diagnostic_updater import Updater, DiagnosticStatusWrapper
 import tf2_ros
 from rclpy.executors import MultiThreadedExecutor
 
@@ -49,7 +50,8 @@ class FastSAMNode(Node):
                 ("odom_base_frame_id", "base"),
                 ("config_path", ""),
                 ("min_dt", 0.1),
-                ("nickname", "fastsam")
+                ("nickname", "fastsam"),
+                ("wait_for_tf_time", 2.0),
                 # ("fastsam_viz", False),
             ]
         )
@@ -60,10 +62,12 @@ class FastSAMNode(Node):
         self.min_dt = self.get_parameter("min_dt").value
         self.nickname = self.get_parameter("nickname").value
         config_path = self.get_parameter("config_path").value
+        self.wait_for_tf_time = self.get_parameter("wait_for_tf_time").value
 
         # self.visualize = self.get_parameter("fastsam_viz").value
         self.visualize = False # TODO: is supporting this helpful?
         self.last_t = -np.inf
+        self.last_diff = None
 
         # FastSAM set up after camera info can be retrieved
         self.status_pub = self.create_publisher(NodeInfoMsg, "roman/fastsam/status", qos_profile=QoSProfile(depth=10))
@@ -90,7 +94,7 @@ class FastSAMNode(Node):
         """
         Wait for a message on topic of type msg_type
         """
-        subscription = self.create_subscription(msg_type, topic, self._wait_for_message_cb, 1)
+        subscription = self.create_subscription(msg_type, topic, self._wait_for_message_cb, qos_profile=QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE))
         
         self._wait_for_message_msg = None
         while self._wait_for_message_msg is None:
@@ -121,8 +125,28 @@ class FastSAMNode(Node):
         ]
         self.ts = message_filters.ApproximateTimeSynchronizer(subs, queue_size=10, slop=0.1)
         self.ts.registerCallback(self.cb) # registers incoming messages to callback
-        
+
+        # Setup Diagnostics Publisher
+        self.updater = Updater(self)
+        self.updater.setHardwareID(self.get_fully_qualified_name())
+        self.updater.add("Segmentation", self.diagnostic_callback)
+        self.updater_timer = self.create_timer(1.0, self.updater.update)
+
         self.log_and_send_status("FastSAM node setup complete.")
+
+    def diagnostic_callback(self, stat: DiagnosticStatusWrapper):
+        if self.last_diff is None:
+            stat.summary(DiagnosticStatusWrapper.WARN, "No messages received")
+        elif self.last_diff >= 4 * self.min_dt:
+            stat.summary(DiagnosticStatusWrapper.ERROR, f"Difference between processed messages is {self.last_diff:.2f} seconds, which is at least four times min processing time of {self.min_dt:.2f} seconds")
+        elif self.last_diff  >= 2 * self.min_dt:
+            stat.summary(DiagnosticStatusWrapper.WARN, f"Difference between processed messages is {self.last_diff:.2f} seconds, which is at least twice min processing time of {self.min_dt:.2f} seconds")
+        else:
+            stat.summary(DiagnosticStatusWrapper.OK, "Images segmented and observations published successfully")
+        stat.add("Last message time", str(self.last_t))
+        stat.add("Last difference", str(self.last_diff))
+        stat.add("Min processing time", str(self.min_dt))
+        return stat
 
     def cb(self, *msgs):
         """
@@ -130,7 +154,6 @@ class FastSAMNode(Node):
         depth image message are received.
         """
         
-        self.get_logger().info("Received messages")
         img_msg, depth_msg = msgs
         if self.cam_frame_id is None:
             self.cam_frame_id = img_msg.header.frame_id
@@ -140,12 +163,13 @@ class FastSAMNode(Node):
         if t - self.last_t < self.min_dt:
             return
         else:
+            self.last_diff = t - self.last_t
             self.last_t = t
 
         try:
             # self.tf_buffer.waitForTransform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
-            transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rclpy.duration.Duration(seconds=2.0))
-            flu_transformed_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.odom_base_frame_id, img_msg.header.stamp, rclpy.duration.Duration(seconds=0.1))
+            transform_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rclpy.duration.Duration(seconds=self.wait_for_tf_time))
+            flu_transformed_stamped_msg = self.tf_buffer.lookup_transform(self.map_frame_id, self.odom_base_frame_id, img_msg.header.stamp, rclpy.duration.Duration(seconds=self.wait_for_tf_time))
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as ex:
             self.log_and_send_status("tf lookup failed", status=NodeInfoMsg.WARNING)
             self.get_logger().warning(str(ex))
