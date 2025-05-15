@@ -56,7 +56,7 @@ RUN sudo apt install tmux && pip install --upgrade tmuxp && \
     echo 'setw -g mouse on' > ~/.tmux.conf 
 
 # Install additional libraries
-RUN sudo apt install -y ros-humble-tf-transformations ros-humble-diagnostic-common-diagnostics ros-humble-rqt-runtime-monitor wmctrl
+RUN sudo apt install -y ros-humble-tf-transformations ros-humble-diagnostic-common-diagnostics ros-humble-rqt-runtime-monitor wmctrl wget
 RUN pip install numpy==1.23 scipy scikit-image matplotlib wmctrl robotdatapy
 
 # Default shell
