@@ -8,6 +8,7 @@ import struct
 import pickle
 import time
 import signal
+import concurrent.futures
 
 # ROS imports
 import rclpy
@@ -18,6 +19,7 @@ import ros2_numpy as rnp
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 import tf2_ros
+from diagnostic_updater import Updater, DiagnosticStatusWrapper
 from rclpy.executors import MultiThreadedExecutor
 
 # ROS msgs
@@ -67,7 +69,9 @@ class RomanMapNode(Node):
                 ("viz_min_viz_dt", 2.0),
                 ("viz_rotate_img", ""),
                 ("viz_pointcloud", False),
-                ("wait_for_tf_time", 1.0)
+                ("wait_for_tf_time", 1.0),
+                ("bag_play_rate", 1.0),
+                ("expected_fps", 30.0),
             ]
         )
 
@@ -81,6 +85,8 @@ class RomanMapNode(Node):
         self.nickname = self.get_parameter("nickname").value
         config_path = self.get_parameter("config_path").value
         self.wait_for_tf_time = self.get_parameter("wait_for_tf_time").value
+        self.bag_play_rate = self.get_parameter("bag_play_rate").value
+        self.expected_fps = self.get_parameter("expected_fps").value
 
         if self.visualize:
             self.map_frame_id = self.get_parameter("map_frame_id").value
@@ -96,10 +102,10 @@ class RomanMapNode(Node):
                 sensor_msgs.PointField(name='x', offset=0, datatype=pc2.PointField.FLOAT32, count=1),
                 sensor_msgs.PointField(name='y', offset=4, datatype=pc2.PointField.FLOAT32, count=1),
                 sensor_msgs.PointField(name='z', offset=8, datatype=pc2.PointField.FLOAT32, count=1),
-                sensor_msgs.PointField(name='rgb', offset=12, datatype=pc2.PointField.FLOAT32, count=1),
+                #sensor_msgs.PointField(name='rgb', offset=12, datatype=pc2.PointField.FLOAT32, count=1),
             ]
 
-            self.pca = PCA(n_components=3)
+            #self.pca = PCA(n_components=3)
 
         if self.output_file != "":
             self.output_file = os.path.expanduser(self.output_file)
@@ -129,6 +135,19 @@ class RomanMapNode(Node):
 
         self.setup_ros()
 
+        # Setup Diagnostics Publisher
+        self.updater = Updater(self)
+        self.updater.setHardwareID(self.get_fully_qualified_name())
+        self.updater.add("Mapping", self.diagnostic_callback)
+        if self.visualize:
+            self.updater.add("Annotated Images", self.diagnostic_images_callback)
+            self.updater.add("Point Cloud", self.diagnostic_pc)
+        self.updater_timer = self.create_timer(self.bag_play_rate / 20, self.updater.update)
+        self.publish_times = []
+        self.viz_times = []
+        self.pc_times = []
+        self.start_time = 0
+
     def setup_ros(self):
         
         # ros publishers
@@ -148,6 +167,8 @@ class RomanMapNode(Node):
             self.bridge = cv_bridge.CvBridge()
             self.annotated_img_pub = self.create_publisher(sensor_msgs.Image, "roman/annotated_img", qos_profile=10)
             self.object_points_pub = self.create_publisher(sensor_msgs.PointCloud2, "roman/object_points", qos_profile=10)
+            self.object_points_timer = self.create_timer(self.bag_play_rate / 4, self.object_points_publish)
+            self.object_points_expected_fps = 4 / self.bag_play_rate
 
         self.log_and_send_status("ROMAN Map Node setup complete.", status=NodeInfoMsg.STARTUP)
         self.log_and_send_status("Waiting for observation.", status=NodeInfoMsg.STARTUP)
@@ -194,56 +215,82 @@ class RomanMapNode(Node):
         if self.output_file is not None:
             self.pose_history.append(rnp.numpify(obs_array_msg.pose_flu))
             self.time_history.append(t)
+        self.publish_times.append(self.get_clock().now().nanoseconds / 1e9)
 
-        # Publish Point Clouds
-        if self.visualize:
-            # Get the self.viz_num_objs most recently seen segments
-            most_recently_seen_segments = sorted(
-                self.mapper.segments + self.mapper.inactive_segments + self.mapper.segment_graveyard, 
-                key=lambda x: x.last_seen if len(x.points) > 10 else 0, reverse=True)#[:self.viz_num_objs]
+            # # Get the self.viz_num_objs most recently seen segments
+            # most_recently_seen_segments = sorted(
+            #     self.mapper.segments + self.mapper.inactive_segments + self.mapper.segment_graveyard, 
+            #     key=lambda x: x.last_seen if len(x.points) > 10 else 0, reverse=True)#[:self.viz_num_objs]
             
-            total_points = np.zeros([0, 4], dtype=np.float32)
+            # total_points = np.zeros([0, 4], dtype=np.float32)
 
-            if len(most_recently_seen_segments) >= 3:
-                # Extract semantic descriptors for each segment and fit_transform with pca
-                semantic_descriptors = np.array([segment.semantic_descriptor for segment in most_recently_seen_segments])
-                pca_array = self.pca.fit_transform(semantic_descriptors)
-                min_val = pca_array.min(axis=0)
-                max_val = pca_array.max(axis=0)
-                scaled = (pca_array - min_val) / (max_val - min_val + 1e-8)  # avoid div0
-                colors_unpacked = (scaled * 255).astype(np.uint8)
+            # if len(most_recently_seen_segments) >= 3:
+            #     # Extract semantic descriptors for each segment and fit_transform with pca
+            #     semantic_descriptors = np.array([segment.semantic_descriptor for segment in most_recently_seen_segments])
+            #     pca_array = self.pca.fit_transform(semantic_descriptors)
+            #     min_val = pca_array.min(axis=0)
+            #     max_val = pca_array.max(axis=0)
+            #     scaled = (pca_array - min_val) / (max_val - min_val + 1e-8)  # avoid div0
+            #     colors_unpacked = (scaled * 255).astype(np.uint8)
                 
-                for i, segment in enumerate(most_recently_seen_segments):
-                    color_unpacked = colors_unpacked[i]
-                    color_raw = int(color_unpacked[0]*256**2 + color_unpacked[1]*256 + color_unpacked[2])
-                    color_packed = struct.unpack('f', struct.pack('I', color_raw))[0]
-                    rgb_uint32 = struct.unpack('I', struct.pack('f', color_packed))[0]
-                    r = (rgb_uint32 >> 16) & 0xFF
-                    g = (rgb_uint32 >> 8) & 0xFF
-                    b = rgb_uint32 & 0xFF
+            #     for i, segment in enumerate(most_recently_seen_segments):
+            #         color_unpacked = colors_unpacked[i]
+            #         color_raw = int(color_unpacked[0]*256**2 + color_unpacked[1]*256 + color_unpacked[2])
+            #         color_packed = struct.unpack('f', struct.pack('I', color_raw))[0]
+            #         rgb_uint32 = struct.unpack('I', struct.pack('f', color_packed))[0]
+            #         r = (rgb_uint32 >> 16) & 0xFF
+            #         g = (rgb_uint32 >> 8) & 0xFF
+            #         b = rgb_uint32 & 0xFF
                     
-                    # Sample 50% points from the segment randomly
-                    points = segment.points
-                    sampled_points = np.random.choice(len(points), int(len(points) / 2), replace=False)
-                    points = [points[i] for i in sampled_points]
-                    points = np.concatenate((points, np.full((len(points), 1), color_packed)), axis=1)
-                    total_points = np.concatenate((total_points, np.array(points)), axis=0)
+            #         # Sample 25% points from the segment randomly
+            #         points = segment.points
+            #         sampled_points = np.random.choice(len(points), int(len(points) / 4), replace=False)
+            #         points = [points[i] for i in sampled_points]
+            #         points = np.concatenate((points, np.full((len(points), 1), color_packed)), axis=1)
+            #         total_points = np.concatenate((total_points, np.array(points)), axis=0)
 
-                # If there aren't any points, return
-                if len(total_points.shape) == 1:
-                    return
+            #     # If there aren't any points, return
+            #     if len(total_points.shape) == 1:
+            #         return
                 
-                # Convert nddarray to iterable list of tuples
-                points = []
-                for row in total_points:
-                    points.append(tuple(row))
+            #     # Convert nddarray to iterable list of tuples
+            #     points = []
+            #     for row in total_points:
+            #         points.append(tuple(row))
 
-                # Create a PointCloud2 message
-                header = std_msgs.Header()
-                header.stamp = obs_array_msg.header.stamp
-                header.frame_id = self.map_frame_id
-                cloud_msg = pc2.create_cloud(header, self.pc_fields, points)
-                self.object_points_pub.publish(cloud_msg)
+            #     # Create a PointCloud2 message
+            #     header = std_msgs.Header()
+            #     header.stamp = obs_array_msg.header.stamp
+            #     header.frame_id = self.map_frame_id
+            #     cloud_msg = pc2.create_cloud(header, self.pc_fields, points)
+            #     self.object_points_pub.publish(cloud_msg)
+
+    def object_points_publish(self):
+        def process_segment(segment):
+            pts = np.asarray(segment.points)
+            sampled_idx = np.random.choice(len(pts), len(pts) // 4, replace=False)
+            sampled_pts = pts[sampled_idx]
+            return sampled_pts[:, :3]  # Keep only XYZ
+        
+        all_segments = self.mapper.segments + self.mapper.inactive_segments + self.mapper.segment_graveyard
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(process_segment, all_segments))
+
+        total_points = [r for r in results if r is not None]
+        if not total_points:
+            return
+
+        total_points = np.vstack(total_points)
+        cloud_data = [tuple(pt) for pt in total_points]  # Just XYZ
+
+        header = std_msgs.Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = self.map_frame_id
+
+        cloud_msg = pc2.create_cloud(header, self.pc_fields, cloud_data)
+        self.object_points_pub.publish(cloud_msg)
+        self.pc_times.append(self.get_clock().now().nanoseconds / 1e9)
 
     def publish_segment(self, segment: Segment):
         if self.object_ref == 'bottom_middle':
@@ -258,10 +305,10 @@ class RomanMapNode(Node):
             return
 
         t = time_stamp_to_float(img_msg.header.stamp)
-        if t - self.last_viz_t < self.min_viz_dt:
-            return
-        else:
-            self.last_viz_t = t
+        # if t - self.last_viz_t < self.min_viz_dt:
+        #     return
+        # else:
+        self.last_viz_t = t
             
         cam_frame_id = img_msg.header.frame_id
         
@@ -289,6 +336,7 @@ class RomanMapNode(Node):
         annotated_img_msg = self.bridge.cv2_to_imgmsg(img, encoding="bgr8")
         annotated_img_msg.header = img_msg.header
         self.annotated_img_pub.publish(annotated_img_msg)
+        self.viz_times.append(self.get_clock().now().nanoseconds / 1e9)
         
     def log_and_send_status(self, note, status=NodeInfoMsg.NOMINAL):
         """
@@ -333,6 +381,81 @@ class RomanMapNode(Node):
     def _wait_for_message_cb(self, msg):
         self._wait_for_message_msg = msg
         return
+    
+    def diagnostic_callback(self, stat: DiagnosticStatusWrapper):
+        # Remove all entries in self.publish_times that are older than 1 second
+        time_float = self.get_clock().now().nanoseconds / 1e9
+        self.publish_times = [t for t in self.publish_times if t > time_float - 1]
+
+        # Calculate Publish FPS
+        while self.start_time == 0:
+            self.start_time = self.get_clock().now().nanoseconds / 1e9
+            time.sleep(0.1)
+
+        window_size = np.min([1.0, (self.get_clock().now().nanoseconds / 1e9) - self.start_time])
+        fps = len(self.publish_times) / window_size
+
+        # Based on the FPS, set the status
+        if fps < self.expected_fps * 0.4:
+            stat.summary(DiagnosticStatusWrapper.ERROR, "Segment Mapping FPS below 40% of the expected rate")
+        elif fps < self.expected_fps * 0.8:
+            stat.summary(DiagnosticStatusWrapper.WARN, "Segment Mapping FPS below 80% of the expected rate")
+        else:
+            stat.summary(DiagnosticStatusWrapper.OK, "Segment Mapping FPS within expected rate")
+        stat.add("FPS", str(fps))
+        stat.add("Expected FPS", str(self.expected_fps))
+        stat.add("Window Size", str(window_size))
+        return stat
+
+    def diagnostic_images_callback(self, stat: DiagnosticStatusWrapper):
+        # Remove all entries in self.viz_times that are older than 1 second
+        time_float = self.get_clock().now().nanoseconds / 1e9
+        self.viz_times = [t for t in self.viz_times if t > time_float - 1]
+
+        # Calculate Publish FPS
+        while self.start_time == 0:
+            self.start_time = self.get_clock().now().nanoseconds / 1e9
+            time.sleep(0.1)
+
+        window_size = np.min([1.0, (self.get_clock().now().nanoseconds / 1e9) - self.start_time])
+        fps = len(self.viz_times) / window_size
+
+        # Based on the FPS, set the status
+        if fps < self.expected_fps * 0.4:
+            stat.summary(DiagnosticStatusWrapper.ERROR, "Annotated Image Viz below 40% of the expected rate")
+        elif fps < self.expected_fps * 0.8:
+            stat.summary(DiagnosticStatusWrapper.WARN, "Annotated Image Viz below 80% of the expected rate")
+        else:
+            stat.summary(DiagnosticStatusWrapper.OK, "Annotated Image Viz within expected rate")
+        stat.add("FPS", str(fps))
+        stat.add("Expected FPS", str(self.expected_fps))
+        stat.add("Window Size", str(window_size))
+        return stat
+    
+    def diagnostic_pc(self, stat: DiagnosticStatusWrapper):
+        # Remove all entries in self.pc_times that are older than 1 second
+        time_float = self.get_clock().now().nanoseconds / 1e9
+        self.pc_times = [t for t in self.pc_times if t > time_float - 1]
+
+        # Calculate Publish FPS
+        while self.start_time == 0:
+            self.start_time = self.get_clock().now().nanoseconds / 1e9
+            time.sleep(0.1)
+
+        window_size = np.min([1.0, (self.get_clock().now().nanoseconds / 1e9) - self.start_time])
+        fps = len(self.pc_times) / window_size
+
+        # Based on the FPS, set the status
+        if fps < self.object_points_expected_fps * 0.4:
+            stat.summary(DiagnosticStatusWrapper.ERROR, "Point Cloud Publisher below 40% of the expected rate")
+        elif fps < self.object_points_expected_fps * 0.8:
+            stat.summary(DiagnosticStatusWrapper.WARN, "Point Cloud Publisher below 80% of the expected rate")
+        else:
+            stat.summary(DiagnosticStatusWrapper.OK, "Point Cloud Publisher within expected rate")
+        stat.add("FPS", str(fps))
+        stat.add("Expected FPS", str(self.object_points_expected_fps))
+        stat.add("Window Size", str(window_size))
+        return stat
 
 def main():
 

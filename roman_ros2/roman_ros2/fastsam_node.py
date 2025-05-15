@@ -4,6 +4,7 @@ import os
 from scipy.spatial.transform import Rotation as Rot
 import struct
 import open3d as o3d
+import time
 
 # ROS imports
 import rclpy
@@ -49,9 +50,11 @@ class FastSAMNode(Node):
                 ("map_frame_id", "map"),
                 ("odom_base_frame_id", "base"),
                 ("config_path", ""),
-                ("min_dt", 0.1),
+                ("min_dt", 0.01),
                 ("nickname", "fastsam"),
                 ("wait_for_tf_time", 2.0),
+                ("bag_play_rate", 1.0),
+                ("expected_fps", 40.0),
                 # ("fastsam_viz", False),
             ]
         )
@@ -63,6 +66,8 @@ class FastSAMNode(Node):
         self.nickname = self.get_parameter("nickname").value
         config_path = self.get_parameter("config_path").value
         self.wait_for_tf_time = self.get_parameter("wait_for_tf_time").value
+        self.bag_play_rate = self.get_parameter("bag_play_rate").value
+        self.expected_fps = self.get_parameter("expected_fps").value
 
         # self.visualize = self.get_parameter("fastsam_viz").value
         self.visualize = False # TODO: is supporting this helpful?
@@ -130,22 +135,35 @@ class FastSAMNode(Node):
         self.updater = Updater(self)
         self.updater.setHardwareID(self.get_fully_qualified_name())
         self.updater.add("Segmentation", self.diagnostic_callback)
-        self.updater_timer = self.create_timer(1.0, self.updater.update)
+        self.updater_timer = self.create_timer(1 * self.bag_play_rate / 20, self.updater.update)
+        self.publish_times = []
+        self.start_time = 0
 
         self.log_and_send_status("FastSAM node setup complete.")
 
     def diagnostic_callback(self, stat: DiagnosticStatusWrapper):
-        if self.last_diff is None:
-            stat.summary(DiagnosticStatusWrapper.WARN, "No messages received")
-        elif self.last_diff >= 4 * self.min_dt:
-            stat.summary(DiagnosticStatusWrapper.ERROR, f"Difference between processed messages is {self.last_diff:.2f} seconds, which is at least four times min processing time of {self.min_dt:.2f} seconds")
-        elif self.last_diff  >= 2 * self.min_dt:
-            stat.summary(DiagnosticStatusWrapper.WARN, f"Difference between processed messages is {self.last_diff:.2f} seconds, which is at least twice min processing time of {self.min_dt:.2f} seconds")
+        # Remove all entries in self.publish_times that are older than 1 second
+        time_float = self.get_clock().now().nanoseconds / 1e9
+        self.publish_times = [t for t in self.publish_times if t > time_float - 1]
+
+        # Calculate Publish FPS
+        while self.start_time == 0:
+            self.start_time = self.get_clock().now().nanoseconds / 1e9
+            time.sleep(0.1)
+
+        window_size = np.min([1.0, (self.get_clock().now().nanoseconds / 1e9) - self.start_time])
+        fps = len(self.publish_times) / window_size
+
+        # Based on the FPS, set the status
+        if fps < self.expected_fps * 0.4:
+            stat.summary(DiagnosticStatusWrapper.ERROR, "Observation Publish FPS below 40% of the expected range")
+        elif fps < self.expected_fps * 0.8:
+            stat.summary(DiagnosticStatusWrapper.WARN, "Observation Publish FPS below 80% of the expected range")
         else:
-            stat.summary(DiagnosticStatusWrapper.OK, "Images segmented and observations published successfully")
-        stat.add("Last message time", str(self.last_t))
-        stat.add("Last difference", str(self.last_diff))
-        stat.add("Min processing time", str(self.min_dt))
+            stat.summary(DiagnosticStatusWrapper.OK, "Observation Publish FPS within expected range")
+        stat.add("FPS", str(fps))
+        stat.add("Expected FPS", str(self.expected_fps))
+        stat.add("Window Size", str(window_size))
         return stat
 
     def cb(self, *msgs):
@@ -160,11 +178,11 @@ class FastSAMNode(Node):
 
         # check that enough time has passed since last observation (to not overwhelm GPU)
         t = rclpy.time.Time.from_msg(img_msg.header.stamp).nanoseconds * 1e-9
-        if t - self.last_t < self.min_dt:
-            return
-        else:
-            self.last_diff = t - self.last_t
-            self.last_t = t
+        # if t - self.last_t < self.min_dt:
+        #     return
+        # else:
+        #     self.last_diff = t - self.last_t
+        #     self.last_t = t
 
         try:
             # self.tf_buffer.waitForTransform(self.map_frame_id, self.cam_frame_id, img_msg.header.stamp, rospy.Duration(0.5))
@@ -199,6 +217,8 @@ class FastSAMNode(Node):
 
         # if self.visualize:
         #     self.pub_ptclds(observations, img_msg.header, depth)
+
+        self.publish_times.append(self.get_clock().now().nanoseconds / 1e9)
 
         return
     

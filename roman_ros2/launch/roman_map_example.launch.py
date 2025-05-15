@@ -9,12 +9,16 @@ from ament_index_python.packages import get_package_share_directory
 robot = LaunchConfiguration('robot')
 node_name = LaunchConfiguration('node_name')
 config_path = LaunchConfiguration('config_path')
+bag_play_rate = LaunchConfiguration('bag_play_rate')
+expected_fps = LaunchConfiguration('expected_fps')
 
 robot_launch_arg = DeclareLaunchArgument('robot')
 node_name_launch_arg = DeclareLaunchArgument('node_name')
 config_path_launch_arg = DeclareLaunchArgument('config_path',
     default_value=os.path.join(
     get_package_share_directory('roman_ros2'), 'cfg', 'default_mapper.yaml'))
+bag_play_rate_launch_arg = DeclareLaunchArgument('bag_play_rate', default_value='1.0')
+expected_fps_launch_arg = DeclareLaunchArgument('expected_fps', default_value='30.0')
 
 
 topic_remappings = [
@@ -38,6 +42,8 @@ frame_params = {
     'odom_base_frame_id': [robot, '/odom_local'],
     'use_sim_time': True,
     'wait_for_tf_time': 10.0,
+    'bag_play_rate': 1.0,
+    'expected_fps': expected_fps,
 }
 
 config_path_param = {'config_path': config_path}

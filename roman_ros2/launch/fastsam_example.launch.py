@@ -9,12 +9,14 @@ from ament_index_python.packages import get_package_share_directory
 robot = LaunchConfiguration('robot')
 node_name = LaunchConfiguration('node_name')
 config_path = LaunchConfiguration('config_path')
+bag_play_rate = LaunchConfiguration('bag_play_rate')
 
 robot_launch_arg = DeclareLaunchArgument('robot')
 node_name_launch_arg = DeclareLaunchArgument('node_name')
 config_path_launch_arg = DeclareLaunchArgument('config_path',
     default_value=os.path.join(
     get_package_share_directory('roman_ros2'), 'cfg', 'default_fastsam.yaml'))
+bag_play_rate_launch_arg = DeclareLaunchArgument('bag_play_rate', default_value='1.0')
 
 
 topic_remappings = [
@@ -38,6 +40,7 @@ frame_params = {
     'cam_frame_id': [robot, '/front_center_optical'],
     'use_sim_time': True,
     'wait_for_tf_time': 10.0,
+    'bag_play_rate': 1.0,
 }
 
 config_path_param = {'config_path': config_path}
@@ -47,6 +50,7 @@ def generate_launch_description():
         robot_launch_arg,
         node_name_launch_arg,
         config_path_launch_arg,
+        bag_play_rate_launch_arg,
         Node(
             package='roman_ros2',
             namespace='',

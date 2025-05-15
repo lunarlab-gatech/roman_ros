@@ -31,7 +31,7 @@ The rest of this README **assumes that you are inside the Docker container**. Fo
 enter_container.sh
 ```
 
-### ROMAN Install
+### ROMAN Dependency Install
 
 Next install ROMAN by navigating to the `roman_ros` directory and then run the following:
 ```
@@ -41,7 +41,12 @@ git submodule update
 pip uninstall matplotlib
 ```
 
-### ros packages Install & Build
+### ROS2 Packages Install & Build
+
+Navigate to the `src` directory and run the following command:
+```
+git clone https://github.com/rpng/open_vins/
+```
 
 Now, navigate to the the root of your ros2 workspace and run the following commands:
 

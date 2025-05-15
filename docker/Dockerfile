@@ -48,7 +48,8 @@ RUN sudo apt update && sudo apt install locales -y && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null && \
     sudo apt update && \
     sudo apt upgrade && \
-    sudo apt install -y ros-humble-desktop ros-dev-tools python3-vcstool
+    sudo apt install -y ros-humble-desktop ros-dev-tools python3-vcstool python3-colcon-clean ros-humble-image-transport-plugins && \
+    echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc
 
 # Install tmuxp
 RUN sudo apt install tmux && pip install --upgrade tmuxp && \
@@ -58,6 +59,9 @@ RUN sudo apt install tmux && pip install --upgrade tmuxp && \
 # Install additional libraries
 RUN sudo apt install -y ros-humble-tf-transformations ros-humble-diagnostic-common-diagnostics ros-humble-rqt-runtime-monitor wmctrl
 RUN pip install numpy==1.23 scipy scikit-image matplotlib wmctrl robotdatapy
+
+# Install dependencies for OpenVINS
+RUN sudo apt install -y libceres-dev
 
 # Default shell
 CMD [ "bash" ]
