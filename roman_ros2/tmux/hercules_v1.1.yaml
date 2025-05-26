@@ -2,7 +2,7 @@ session_name: hercules
 suppress_history: false
 
 environment:
-  BAG_DIR: '~/data/hercules_test_datasets/'
+  BAG_DIR: '~/data/hercules_test_datasets_V1.1/'
   BAG_PLAY_RATE: '1'
   ROS_WS: '~/roman_ros_ws/'
 
@@ -19,7 +19,7 @@ windows:
   - shell_command:
     - cd ${BAG_DIR}
     - sleep 10
-    - ros2 bag play ausenv_test1_BEVP_CONVOY_2UAVUGV --clock 1 -r $BAG_PLAY_RATE --log-level info --topics /tf /tf_static /hercules_node/Husky1/front_center_Scene/camera_info /hercules_node/Husky1/front_center_Scene/image /hercules_node/Husky1/front_center_DepthPerspective/camera_info /hercules_node/Husky1/front_center_DepthPerspective/image /hercules_node/Drone1/front_center_Scene/camera_info /hercules_node/Drone1/front_center_Scene/image /hercules_node/Drone1/front_center_DepthPerspective/camera_info /hercules_node/Drone1/front_center_DepthPerspective/image --read-ahead-queue 2000
+    - ros2 bag play ausenv_test1_checkpoints_CSLAM_2UAVUGV --clock 1 -r $BAG_PLAY_RATE --log-level info --topics /tf /tf_static /hercules_node/Husky1/front_center_Scene/camera_info /hercules_node/Husky1/front_center_Scene/image /hercules_node/Husky1/front_center_DepthPerspective/camera_info /hercules_node/Husky1/front_center_DepthPerspective/image /hercules_node/Drone1/front_center_Scene/camera_info /hercules_node/Drone1/front_center_Scene/image /hercules_node/Drone1/front_center_DepthPerspective/camera_info /hercules_node/Drone1/front_center_DepthPerspective/image --read-ahead-queue 2000
   - shell_command: 
     - export FASTSAM_WEIGHTS_PATH=${ROS_WS}/models/FastSAM-x.pt
     - ros2 launch roman_ros2 fastsam_example.launch.py robot:=Husky1 node_name:=Husky1_FastSAM

@@ -1,4 +1,4 @@
-DATA_DIR='/media/dbutterfield3/T71'
+DATA_DIR='/media/dbutterfield3/T72'
 ROS_WS_DIR='/home/dbutterfield3/Research/ros_workspaces/roman_ros2_ws'
 
 docker run -it \
@@ -19,4 +19,4 @@ docker run -it \
     --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
     --volume="$XAUTHORITY:/tmp/.Xauthority:ro" \
     roman_ros_hercules \
-    bash
+    /bin/bash
